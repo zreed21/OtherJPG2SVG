@@ -94,13 +94,8 @@ ${svgContent}
     URL.revokeObjectURL(url);
   }, [svgPaths]);
 
-  const handleUndo = () => {
-    // Basic undo placeholder
-  };
-
-  const handleRedo = () => {
-    // Basic redo placeholder
-  };
+  const handleUndo = () => {};
+  const handleRedo = () => {};
 
   const handleAutoClean = useCallback(() => {
     setSvgPaths(prev => {
@@ -120,9 +115,13 @@ ${svgContent}
       <SidebarLeft 
         sourceImage={sourceImage} 
         onUpload={handleImageUpload} 
-        onReset={() => setSourceImage(null)}
+        onReset={() => {
+          setSourceImage(null);
+          setSvgPaths([]);
+        }}
         bgOpacity={bgOpacity}
         setBgOpacity={setBgOpacity}
+        setSourceImage={setSourceImage}
       />
 
       {/* Main Content Area */}
