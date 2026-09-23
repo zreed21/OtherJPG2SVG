@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import * as ImageTracerModule from 'imagetracerjs';
 import { AppSettings } from '../App';
+import { traceCenterlines } from '../utils/centerlineTracer';
 
 // @ts-ignore
 const ImageTracer = ImageTracerModule.default || ImageTracerModule;
@@ -24,13 +25,82 @@ export const useVectorization = () => {
     setIsProcessing(true);
     
     try {
-      // Configuration for ImageTracer
+      // 1. Same-Size Line / Centerline Mode with Gap Connection & Human Error Smoothing
+      if (settings.mode === 'same_size_line') {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        await new Promise((resolve, reject) => {
+          img.onload = resolve;
+          img.onerror = reject;
+          img.src = imageSrc;
+        });
+
+        let width = img.width;
+        let height = img.height;
+        const MAX_DIM = 1200;
+        if (width > MAX_DIM || height > MAX_DIM) {
+          if (width > height) {
+            height = Math.round((height * MAX_DIM) / width);
+            width = MAX_DIM;
+          } else {
+            width = Math.round((width * MAX_DIM) / height);
+            height = MAX_DIM;
+          }
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) throw new Error('Could not create canvas context');
+
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+
+        const imgData = ctx.getImageData(0, 0, width, height);
+
+        const res = traceCenterlines(imgData, {
+          threshold: settings.threshold,
+          adaptiveLighting: settings.adaptiveLighting,
+          adaptiveSensitivity: settings.adaptiveSensitivity,
+          invert: false,
+          lineWidth: settings.lineWidth,
+          strokeColor: settings.strokeColor || '#000000',
+          fillBackground: 'none',
+          lineCap: 'round',
+          lineJoin: 'round',
+          connectGaps: settings.connectGaps,
+          gapMaxDistance: settings.gapMaxDistance,
+          autoCloseLoops: true,
+          humanErrorSmoothing: settings.humanErrorSmoothing,
+          minPathLength: Math.max(5, settings.minShapeSize),
+        });
+
+        setResultSvg(res.svg);
+
+        const paths: SvgPath[] = res.paths.map((p, index) => ({
+          id: `path-centerline-${Date.now()}-${index}`,
+          d: p.d,
+          fill: 'none',
+          stroke: settings.strokeColor || '#000000',
+          strokeWidth: settings.lineWidth,
+          opacity: 1,
+          type: 'path' as const,
+        }));
+
+        setSvgPaths(paths);
+        setIsProcessing(false);
+        return;
+      }
+
+      // 2. Standard ImageTracer Modes (Silhouette, Outline, Color, BW, etc.)
       const options: any = {
         ltres: settings.simplification / 10,
         qtres: settings.simplification / 5,
         pathomit: settings.minShapeSize,
         rightangleenhance: settings.preserveCorners,
-        colorsampling: 1, // Default to grayscale/threshold for most CAD tasks
+        colorsampling: 1,
         numberofcolors: settings.colors,
         mincolorratio: 0.02,
         colorquantcycles: 3,
@@ -43,23 +113,20 @@ export const useVectorization = () => {
         blurdelta: 20
       };
 
-      // Adjust based on mode
       if (settings.mode === 'color') {
         options.colorsampling = 2;
       } else if (settings.mode === 'silhouette' || settings.mode === 'bw') {
-        options.colorsampling = 0; // Black and white
+        options.colorsampling = 0;
       } else if (settings.mode === 'outline') {
         options.strokewidth = 1;
         options.linefilter = true;
       }
 
-      // ImageTracer takes an image URL or HTMLImageElement
       ImageTracer.imageToSVG(
         imageSrc,
         (svgString: string) => {
           setResultSvg(svgString);
           
-          // Parse SVG string to get paths for interactive cleanup
           const parser = new DOMParser();
           const doc = parser.parseFromString(svgString, 'image/svg+xml');
           const paths = Array.from(doc.querySelectorAll('path')).map((p, index) => ({

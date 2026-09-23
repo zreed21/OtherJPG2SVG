@@ -5,7 +5,7 @@ import MainCanvas from './components/MainCanvas';
 import Toolbar from './components/Toolbar';
 import { useVectorization } from './hooks/useVectorization';
 
-export type VectorizationMode = 'silhouette' | 'outline' | 'multiple' | 'edge' | 'bw' | 'color';
+export type VectorizationMode = 'same_size_line' | 'silhouette' | 'outline' | 'multiple' | 'edge' | 'bw' | 'color';
 
 export interface AppSettings {
   sensitivity: number;
@@ -19,6 +19,14 @@ export interface AppSettings {
   preserveCorners: boolean;
   preserveDetails: boolean;
   fillRule: 'nonzero' | 'evenodd';
+  // Same Size Line & Connect / Smooth parameters
+  lineWidth: number;
+  connectGaps: boolean;
+  gapMaxDistance: number;
+  humanErrorSmoothing: number;
+  adaptiveLighting: boolean;
+  adaptiveSensitivity: number;
+  strokeColor: string;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -28,11 +36,18 @@ const DEFAULT_SETTINGS: AppSettings = {
   minShapeSize: 10,
   simplification: 20,
   smoothing: 20,
-  mode: 'bw',
+  mode: 'same_size_line',
   colors: 8,
   preserveCorners: true,
   preserveDetails: false,
   fillRule: 'evenodd',
+  lineWidth: 3.5,
+  connectGaps: true,
+  gapMaxDistance: 25,
+  humanErrorSmoothing: 5.0,
+  adaptiveLighting: true,
+  adaptiveSensitivity: 15,
+  strokeColor: '#000000',
 };
 
 const App: React.FC = () => {
@@ -59,8 +74,6 @@ const App: React.FC = () => {
   const handleExport = useCallback(() => {
     if (svgPaths.length === 0) return;
     
-    // Calculate bounds
-    // For simplicity, we'll use the original viewbox or just a default
     const svgContent = svgPaths.map(p => 
       `<path d="${p.d}" fill="${p.fill}" stroke="${p.stroke}" stroke-width="${p.strokeWidth}" opacity="${p.opacity}" />`
     ).join('\n');
@@ -91,8 +104,6 @@ ${svgContent}
 
   const handleAutoClean = useCallback(() => {
     setSvgPaths(prev => {
-      // 1. Remove very small paths (noise)
-      // 2. Remove duplicates
       const seen = new Set();
       return prev.filter(p => {
         if (p.d.length < 20) return false;
@@ -141,10 +152,10 @@ ${svgContent}
         <div className="h-8 bg-zinc-900 border-t border-zinc-800 flex items-center px-4 text-xs text-zinc-500 justify-between">
           <div className="flex gap-4">
             <span>Objects: {svgPaths.length}</span>
-            <span>Zoom: 100%</span>
+            <span>Mode: {settings.mode}</span>
           </div>
           <div className="flex gap-4">
-            <span>{isProcessing ? 'Processing...' : 'Ready'}</span>
+            <span>{isProcessing ? 'Vectorizing...' : 'Ready'}</span>
           </div>
         </div>
       </div>
