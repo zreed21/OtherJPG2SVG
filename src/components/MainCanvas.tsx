@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as fabric from 'fabric';
 import { SvgPath } from '../hooks/useVectorization';
-import { ZoomIn, ZoomOut, Maximize2, MousePointer, Trash2 } from 'lucide-react';
+import { ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
 
 interface MainCanvasProps {
   sourceImage: string | null;
@@ -68,7 +68,6 @@ const MainCanvas: React.FC<MainCanvasProps> = ({
           canvas.remove(opt.target);
           canvas.requestRenderAll();
         } else if (activeTool === 'wand') {
-          // Highlight / Isolate object
           opt.target.set({
             stroke: '#3b82f6',
             strokeWidth: (opt.target.strokeWidth || 2) + 2,
@@ -127,7 +126,6 @@ const MainCanvas: React.FC<MainCanvasProps> = ({
         obj.evented = activeTool === 'select' || activeTool === 'remove' || activeTool === 'wand';
         obj.hoverCursor = activeTool === 'remove' ? 'not-allowed' : activeTool === 'wand' ? 'crosshair' : 'move';
         
-        // In Node Edit mode, display control anchors
         if (activeTool === 'node') {
           obj.set({
             hasControls: true,
@@ -162,8 +160,16 @@ const MainCanvas: React.FC<MainCanvasProps> = ({
     let isCancelled = false;
 
     const renderObjects = async () => {
-      if (!fabricCanvasRef.current || !sourceImage) return;
+      if (!fabricCanvasRef.current) return;
       const canvas = fabricCanvasRef.current;
+
+      // When sourceImage is null (e.g. after clicking Clear Image), completely clear canvas!
+      if (!sourceImage) {
+        canvas.clear();
+        canvas.backgroundColor = '#09090b';
+        canvas.requestRenderAll();
+        return;
+      }
 
       canvas.clear();
       canvas.backgroundColor = '#09090b';
