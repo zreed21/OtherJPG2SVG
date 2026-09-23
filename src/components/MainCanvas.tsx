@@ -1,9 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
-import * as fabricModule from 'fabric';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+import * as fabric from 'fabric';
 import { SvgPath } from '../hooks/useVectorization';
-
-// @ts-ignore
-const fabric = fabricModule.fabric || fabricModule;
+import { ZoomIn, ZoomOut, Maximize2, Trash2 } from 'lucide-react';
 
 interface MainCanvasProps {
   sourceImage: string | null;
@@ -24,51 +22,54 @@ const MainCanvas: React.FC<MainCanvasProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const fabricCanvas = useRef<any>(null);
+  const fabricCanvasRef = useRef<fabric.Canvas | null>(null);
   const [zoom, setZoom] = useState(1);
+  const [selectedPathId, setSelectedPathId] = useState<string | null>(null);
 
-  // Use a ref for activeTool to avoid re-binding events on every tool change
-  const activeToolRef = useRef(activeTool);
-  useEffect(() => {
-    activeToolRef.current = activeTool;
-  }, [activeTool]);
-
+  // Initialize Fabric Canvas
   useEffect(() => {
     if (!canvasRef.current || !containerRef.current) return;
 
+    const width = containerRef.current.clientWidth || 800;
+    const height = containerRef.current.clientHeight || 600;
+
     const canvas = new fabric.Canvas(canvasRef.current, {
-      width: containerRef.current.clientWidth,
-      height: containerRef.current.clientHeight,
-      backgroundColor: 'transparent',
+      width,
+      height,
+      backgroundColor: '#09090b',
       preserveObjectStacking: true,
+      selection: activeTool === 'select',
     });
 
-    fabricCanvas.current = canvas;
+    fabricCanvasRef.current = canvas;
 
+    // Zoom on wheel
     canvas.on('mouse:wheel', (opt: any) => {
       const delta = opt.e.deltaY;
       let newZoom = canvas.getZoom();
       newZoom *= 0.999 ** delta;
       if (newZoom > 20) newZoom = 20;
-      if (newZoom < 0.01) newZoom = 0.01;
+      if (newZoom < 0.1) newZoom = 0.1;
       canvas.setZoom(newZoom);
       setZoom(newZoom);
       opt.e.preventDefault();
       opt.e.stopPropagation();
     });
 
+    // Handle delete on click with remove tool
     canvas.on('mouse:down', (opt: any) => {
-      if (activeToolRef.current === 'remove' && opt.target) {
-        const id = (opt.target as any).id;
-        if (id) {
-          setSvgPaths(prev => prev.filter(p => p.id !== id));
+      if (opt.target && (opt.target as any).customId) {
+        const id = (opt.target as any).customId;
+        setSelectedPathId(id);
+        if (activeTool === 'remove') {
+          setSvgPaths((prev) => prev.filter((p) => p.id !== id));
         }
       }
     });
 
     const handleResize = () => {
-      if (!containerRef.current || !fabricCanvas.current) return;
-      fabricCanvas.current.setDimensions({
+      if (!containerRef.current || !fabricCanvasRef.current) return;
+      fabricCanvasRef.current.setDimensions({
         width: containerRef.current.clientWidth,
         height: containerRef.current.clientHeight,
       });
@@ -77,12 +78,12 @@ const MainCanvas: React.FC<MainCanvasProps> = ({
     window.addEventListener('resize', handleResize);
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.key === 'Delete' || e.key === 'Backspace') && activeToolRef.current === 'select') {
-        const activeObjects = canvas.getActiveObjects();
-        if (activeObjects.length > 0) {
-          const idsToRemove = activeObjects.map((obj: any) => obj.id).filter(Boolean);
+      if ((e.key === 'Delete' || e.key === 'Backspace') && activeTool === 'select') {
+        const active = canvas.getActiveObjects();
+        if (active && active.length > 0) {
+          const idsToRemove = active.map((obj: any) => obj.customId).filter(Boolean);
           if (idsToRemove.length > 0) {
-            setSvgPaths(prev => prev.filter(p => !idsToRemove.includes(p.id)));
+            setSvgPaths((prev) => prev.filter((p) => !idsToRemove.includes(p.id)));
           }
           canvas.discardActiveObject();
           canvas.requestRenderAll();
@@ -96,118 +97,188 @@ const MainCanvas: React.FC<MainCanvasProps> = ({
       window.removeEventListener('resize', handleResize);
       window.removeEventListener('keydown', handleKeyDown);
       canvas.dispose();
+      fabricCanvasRef.current = null;
     };
   }, []);
 
+  // Update canvas selection mode on tool change
   useEffect(() => {
-    if (!fabricCanvas.current) return;
-    const canvas = fabricCanvas.current;
-    
-    if (activeTool === 'select') {
-      canvas.selection = true;
-      canvas.forEachObject((obj: any) => {
-        if (obj.id) {
-          obj.selectable = true;
-          obj.evented = true;
-        }
-      });
-    } else if (activeTool === 'remove') {
-      canvas.selection = false;
-      canvas.forEachObject((obj: any) => {
-        if (obj.id) {
-          obj.selectable = false;
-          obj.evented = true;
-        }
-      });
-    } else {
-      canvas.selection = false;
-      canvas.forEachObject((obj: any) => {
-        if (obj.id) {
-          obj.selectable = false;
-          obj.evented = false;
-        }
-      });
-    }
+    if (!fabricCanvasRef.current) return;
+    const canvas = fabricCanvasRef.current;
+    canvas.selection = activeTool === 'select';
+    canvas.forEachObject((obj: any) => {
+      if (obj.customId) {
+        obj.selectable = activeTool === 'select';
+        obj.evented = activeTool === 'select' || activeTool === 'remove';
+        obj.hoverCursor = activeTool === 'remove' ? 'not-allowed' : 'move';
+      }
+    });
+    canvas.requestRenderAll();
   }, [activeTool]);
 
+  // Load Image and SVG Paths whenever they change
   useEffect(() => {
-    if (!fabricCanvas.current) return;
-    const canvas = fabricCanvas.current;
-    
-    canvas.clear();
-    
-    if (sourceImage) {
-      fabric.Image.fromURL(sourceImage, (img: any) => {
+    let isCancelled = false;
+
+    const renderObjects = async () => {
+      if (!fabricCanvasRef.current || !sourceImage) return;
+      const canvas = fabricCanvasRef.current;
+
+      canvas.clear();
+      canvas.backgroundColor = '#09090b';
+
+      try {
+        // Load background image
+        const img = await fabric.FabricImage.fromURL(sourceImage, { crossOrigin: 'anonymous' });
+        if (isCancelled) return;
+
         img.set({
           selectable: false,
           evented: false,
           opacity: bgOpacity,
         });
-        
+
         const canvasWidth = canvas.getWidth();
         const canvasHeight = canvas.getHeight();
         const imgRatio = img.width! / img.height!;
         const canvasRatio = canvasWidth / canvasHeight;
 
         if (imgRatio > canvasRatio) {
-          img.scaleToWidth(canvasWidth * 0.8);
+          img.scaleToWidth(canvasWidth * 0.85);
         } else {
-          img.scaleToHeight(canvasHeight * 0.8);
+          img.scaleToHeight(canvasHeight * 0.85);
         }
-        
+
         canvas.centerObject(img);
         canvas.add(img);
-        canvas.sendToBack(img);
+        canvas.sendObjectToBack(img);
 
-        svgPaths.forEach(pathData => {
-          fabric.loadSVGFromString(`<svg><path d="${pathData.d}" fill="${pathData.fill}" stroke="${pathData.stroke}" stroke-width="${pathData.strokeWidth}" opacity="${pathData.opacity}" /></svg>`, (objects: any[]) => {
-            const obj = objects[0];
+        const imgLeft = img.left!;
+        const imgTop = img.top!;
+        const scaleX = img.scaleX!;
+        const scaleY = img.scaleY!;
+
+        // Render each SVG Path onto Fabric
+        for (const pathData of svgPaths) {
+          if (!pathData.d) continue;
+
+          try {
+            const svgString = `<svg xmlns="http://www.w3.org/2000/svg"><path d="${pathData.d}" fill="${pathData.fill}" stroke="${pathData.stroke}" stroke-width="${pathData.strokeWidth || 1}" opacity="${pathData.opacity}" /></svg>`;
+            const parsed = await fabric.loadSVGFromString(svgString);
+            if (isCancelled || !parsed.objects || parsed.objects.length === 0) continue;
+
+            const obj = parsed.objects[0];
             if (obj) {
-              (obj as any).id = pathData.id;
-              
-              obj.scale(img.scaleX!);
-              obj.set({
-                left: img.left! + (obj.left! * img.scaleX!),
-                top: img.top! + (obj.top! * img.scaleY!),
-                selectable: activeTool === 'select',
-                evented: activeTool === 'select' || activeTool === 'remove',
-                hoverCursor: activeTool === 'remove' ? 'no-drop' : 'move'
-              });
-              
+              (obj as any).customId = pathData.id;
+
+              obj.scaleX = (obj.scaleX || 1) * scaleX;
+              obj.scaleY = (obj.scaleY || 1) * scaleY;
+              obj.left = imgLeft + (obj.left || 0) * scaleX;
+              obj.top = imgTop + (obj.top || 0) * scaleY;
+
+              obj.selectable = activeTool === 'select';
+              obj.evented = activeTool === 'select' || activeTool === 'remove';
+              obj.hoverCursor = activeTool === 'remove' ? 'not-allowed' : 'move';
+
               canvas.add(obj);
-              canvas.renderAll();
             }
-          });
-        });
-      });
-    }
-  }, [svgPaths, sourceImage, bgOpacity]);
+          } catch (e) {
+            console.warn('Could not parse path with fabric, fallback:', e);
+          }
+        }
+
+        canvas.requestRenderAll();
+      } catch (err) {
+        console.error('Error rendering canvas:', err);
+      }
+    };
+
+    renderObjects();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [sourceImage, svgPaths, bgOpacity, activeTool]);
+
+  const handleResetZoom = () => {
+    if (!fabricCanvasRef.current) return;
+    fabricCanvasRef.current.setZoom(1);
+    fabricCanvasRef.current.viewportTransform = [1, 0, 0, 1, 0, 0];
+    setZoom(1);
+    fabricCanvasRef.current.requestRenderAll();
+  };
+
+  const handleZoom = (factor: number) => {
+    if (!fabricCanvasRef.current) return;
+    const canvas = fabricCanvasRef.current;
+    let newZoom = canvas.getZoom() * factor;
+    newZoom = Math.max(0.1, Math.min(20, newZoom));
+    canvas.setZoom(newZoom);
+    setZoom(newZoom);
+    canvas.requestRenderAll();
+  };
 
   return (
-    <div ref={containerRef} className="w-full h-full relative cursor-crosshair canvas-container">
+    <div ref={containerRef} className="w-full h-full relative cursor-crosshair bg-zinc-950 overflow-hidden select-none">
       <canvas ref={canvasRef} />
-      
+
       {!sourceImage && (
-        <div className="absolute inset-0 flex items-center justify-center text-zinc-600 pointer-events-none">
-          <div className="text-center">
-            <p className="text-lg font-medium">No Image Loaded</p>
-            <p className="text-sm">Upload an image from the left panel to begin</p>
+        <div className="absolute inset-0 flex items-center justify-center text-zinc-500 pointer-events-none p-6">
+          <div className="text-center space-y-2">
+            <div className="w-16 h-16 mx-auto rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-center text-zinc-400 shadow-xl">
+              <span className="text-2xl">🎨</span>
+            </div>
+            <p className="text-base font-semibold text-zinc-300">No Image Loaded</p>
+            <p className="text-xs text-zinc-500 max-w-sm">
+              Upload an image from the left panel, choose your trace mode (e.g. Same-Size Line), and click <strong>Generate SVG</strong>.
+            </p>
           </div>
         </div>
       )}
 
       {isProcessing && (
-        <div className="absolute inset-0 bg-black/20 backdrop-blur-[2px] flex items-center justify-center z-50">
-          <div className="bg-zinc-900 border border-zinc-700 px-6 py-4 rounded-xl shadow-2xl flex flex-col items-center gap-4">
-            <div className="w-12 h-12 border-4 border-blue-500/20 border-t-blue-500 rounded-full animate-spin"></div>
-            <p className="text-zinc-100 font-medium tracking-wide">Vectorizing Artwork...</p>
+        <div className="absolute inset-0 bg-black/50 backdrop-blur-xs flex items-center justify-center z-50">
+          <div className="bg-zinc-900 border border-zinc-700 px-6 py-5 rounded-xl shadow-2xl flex flex-col items-center gap-3">
+            <div className="w-10 h-10 border-4 border-blue-500/20 border-t-blue-500 rounded-full animate-spin"></div>
+            <p className="text-zinc-100 font-semibold text-sm tracking-wide">
+              Vectorizing Artwork & Extracting Paths...
+            </p>
           </div>
         </div>
       )}
 
-      <div className="absolute bottom-4 left-4 bg-zinc-900/80 backdrop-blur border border-zinc-700 rounded-lg px-3 py-1.5 text-[10px] text-zinc-400 flex items-center gap-3">
-        <span>Zoom: {Math.round(zoom * 100)}%</span>
-        <span>Objects: {svgPaths.length}</span>
+      {/* Floating Canvas Controls */}
+      <div className="absolute bottom-4 left-4 bg-zinc-900/90 backdrop-blur border border-zinc-800 rounded-lg px-3 py-1.5 text-xs text-zinc-400 flex items-center gap-3 shadow-lg">
+        <div className="flex items-center gap-1 border-r border-zinc-800 pr-2">
+          <button
+            onClick={() => handleZoom(0.8)}
+            className="p-1 hover:text-white rounded"
+            title="Zoom Out"
+          >
+            <ZoomOut size={13} />
+          </button>
+          <span className="font-mono text-zinc-200 text-[11px] w-10 text-center">
+            {Math.round(zoom * 100)}%
+          </span>
+          <button
+            onClick={() => handleZoom(1.25)}
+            className="p-1 hover:text-white rounded"
+            title="Zoom In"
+          >
+            <ZoomIn size={13} />
+          </button>
+          <button
+            onClick={handleResetZoom}
+            className="p-1 hover:text-white rounded ml-1"
+            title="Reset Zoom"
+          >
+            <Maximize2 size={13} />
+          </button>
+        </div>
+
+        <span className="font-medium text-zinc-300">
+          Paths: <strong className="text-blue-400">{svgPaths.length}</strong>
+        </span>
       </div>
     </div>
   );
