@@ -1,15 +1,16 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as fabric from 'fabric';
 import { SvgPath } from '../hooks/useVectorization';
-import { ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
+import { ZoomIn, ZoomOut, Maximize2, MousePointer, Trash2 } from 'lucide-react';
 
 interface MainCanvasProps {
   sourceImage: string | null;
   svgPaths: SvgPath[];
   activeTool: 'select' | 'remove' | 'wand' | 'node';
-  setSvgPaths: React.Dispatch<React.SetStateAction<SvgPath[]>>;
+  setSvgPaths: (updater: (prev: SvgPath[]) => SvgPath[]) => void;
   isProcessing: boolean;
   bgOpacity: number;
+  fitTrigger?: number;
 }
 
 const MainCanvas: React.FC<MainCanvasProps> = ({ 
@@ -18,12 +19,14 @@ const MainCanvas: React.FC<MainCanvasProps> = ({
   activeTool, 
   setSvgPaths,
   isProcessing,
-  bgOpacity
+  bgOpacity,
+  fitTrigger = 0,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fabricCanvasRef = useRef<fabric.Canvas | null>(null);
   const [zoom, setZoom] = useState(1);
+  const [selectedCount, setSelectedCount] = useState(0);
 
   // Initialize Fabric Canvas
   useEffect(() => {
@@ -55,15 +58,29 @@ const MainCanvas: React.FC<MainCanvasProps> = ({
       opt.e.stopPropagation();
     });
 
-    // Handle delete on click with remove tool
+    // Handle tool clicks (Remove, Wand, Select)
     canvas.on('mouse:down', (opt: any) => {
       if (opt.target && (opt.target as any).customId) {
         const id = (opt.target as any).customId;
+
         if (activeTool === 'remove') {
           setSvgPaths((prev) => prev.filter((p) => p.id !== id));
+          canvas.remove(opt.target);
+          canvas.requestRenderAll();
+        } else if (activeTool === 'wand') {
+          // Highlight / Isolate object
+          opt.target.set({
+            stroke: '#3b82f6',
+            strokeWidth: (opt.target.strokeWidth || 2) + 2,
+          });
+          canvas.requestRenderAll();
         }
       }
     });
+
+    canvas.on('selection:created', (e) => setSelectedCount(e.selected?.length || 0));
+    canvas.on('selection:updated', (e) => setSelectedCount(e.selected?.length || 0));
+    canvas.on('selection:cleared', () => setSelectedCount(0));
 
     const handleResize = () => {
       if (!containerRef.current || !fabricCanvasRef.current) return;
@@ -107,12 +124,38 @@ const MainCanvas: React.FC<MainCanvasProps> = ({
     canvas.forEachObject((obj: any) => {
       if (obj.customId) {
         obj.selectable = activeTool === 'select';
-        obj.evented = activeTool === 'select' || activeTool === 'remove';
-        obj.hoverCursor = activeTool === 'remove' ? 'not-allowed' : 'move';
+        obj.evented = activeTool === 'select' || activeTool === 'remove' || activeTool === 'wand';
+        obj.hoverCursor = activeTool === 'remove' ? 'not-allowed' : activeTool === 'wand' ? 'crosshair' : 'move';
+        
+        // In Node Edit mode, display control anchors
+        if (activeTool === 'node') {
+          obj.set({
+            hasControls: true,
+            hasBorders: true,
+            cornerColor: '#3b82f6',
+            cornerSize: 8,
+            transparentCorners: false,
+          });
+        }
       }
     });
     canvas.requestRenderAll();
   }, [activeTool]);
+
+  // Handle Fit to Screen trigger
+  const handleResetZoom = useCallback(() => {
+    if (!fabricCanvasRef.current) return;
+    fabricCanvasRef.current.setZoom(1);
+    fabricCanvasRef.current.viewportTransform = [1, 0, 0, 1, 0, 0];
+    setZoom(1);
+    fabricCanvasRef.current.requestRenderAll();
+  }, []);
+
+  useEffect(() => {
+    if (fitTrigger > 0) {
+      handleResetZoom();
+    }
+  }, [fitTrigger, handleResetZoom]);
 
   // Load Image and SVG Paths in batch
   useEffect(() => {
@@ -156,7 +199,6 @@ const MainCanvas: React.FC<MainCanvasProps> = ({
         const scaleY = img.scaleY!;
 
         if (svgPaths.length > 0) {
-          // Combine all paths into a single SVG document for fast 1-pass parsing
           const pathElements = svgPaths
             .filter((p) => p.d)
             .map(
@@ -181,8 +223,8 @@ const MainCanvas: React.FC<MainCanvasProps> = ({
               obj.top = imgTop + (obj.top || 0) * scaleY;
 
               obj.selectable = activeTool === 'select';
-              obj.evented = activeTool === 'select' || activeTool === 'remove';
-              obj.hoverCursor = activeTool === 'remove' ? 'not-allowed' : 'move';
+              obj.evented = activeTool === 'select' || activeTool === 'remove' || activeTool === 'wand';
+              obj.hoverCursor = activeTool === 'remove' ? 'not-allowed' : activeTool === 'wand' ? 'crosshair' : 'move';
 
               canvas.add(obj);
             }
@@ -201,14 +243,6 @@ const MainCanvas: React.FC<MainCanvasProps> = ({
       isCancelled = true;
     };
   }, [sourceImage, svgPaths, bgOpacity, activeTool]);
-
-  const handleResetZoom = () => {
-    if (!fabricCanvasRef.current) return;
-    fabricCanvasRef.current.setZoom(1);
-    fabricCanvasRef.current.viewportTransform = [1, 0, 0, 1, 0, 0];
-    setZoom(1);
-    fabricCanvasRef.current.requestRenderAll();
-  };
 
   const handleZoom = (factor: number) => {
     if (!fabricCanvasRef.current) return;
@@ -249,6 +283,7 @@ const MainCanvas: React.FC<MainCanvasProps> = ({
         </div>
       )}
 
+      {/* Floating Canvas Controls */}
       <div className="absolute bottom-4 left-4 bg-zinc-900/90 backdrop-blur border border-zinc-800 rounded-lg px-3 py-1.5 text-xs text-zinc-400 flex items-center gap-3 shadow-lg">
         <div className="flex items-center gap-1 border-r border-zinc-800 pr-2">
           <button
@@ -271,7 +306,7 @@ const MainCanvas: React.FC<MainCanvasProps> = ({
           <button
             onClick={handleResetZoom}
             className="p-1 hover:text-white rounded ml-1"
-            title="Reset Zoom"
+            title="Reset Zoom / Fit to Screen"
           >
             <Maximize2 size={13} />
           </button>
@@ -280,6 +315,12 @@ const MainCanvas: React.FC<MainCanvasProps> = ({
         <span className="font-medium text-zinc-300">
           Paths: <strong className="text-blue-400">{svgPaths.length}</strong>
         </span>
+
+        {selectedCount > 0 && (
+          <span className="text-[11px] text-amber-400 font-medium">
+            Selected: {selectedCount}
+          </span>
+        )}
       </div>
     </div>
   );
