@@ -1,7 +1,7 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import * as fabric from 'fabric';
 import { SvgPath } from '../hooks/useVectorization';
-import { ZoomIn, ZoomOut, Maximize2, Trash2 } from 'lucide-react';
+import { ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
 
 interface MainCanvasProps {
   sourceImage: string | null;
@@ -24,7 +24,6 @@ const MainCanvas: React.FC<MainCanvasProps> = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fabricCanvasRef = useRef<fabric.Canvas | null>(null);
   const [zoom, setZoom] = useState(1);
-  const [selectedPathId, setSelectedPathId] = useState<string | null>(null);
 
   // Initialize Fabric Canvas
   useEffect(() => {
@@ -60,7 +59,6 @@ const MainCanvas: React.FC<MainCanvasProps> = ({
     canvas.on('mouse:down', (opt: any) => {
       if (opt.target && (opt.target as any).customId) {
         const id = (opt.target as any).customId;
-        setSelectedPathId(id);
         if (activeTool === 'remove') {
           setSvgPaths((prev) => prev.filter((p) => p.id !== id));
         }
@@ -116,7 +114,7 @@ const MainCanvas: React.FC<MainCanvasProps> = ({
     canvas.requestRenderAll();
   }, [activeTool]);
 
-  // Load Image and SVG Paths whenever they change
+  // Load Image and SVG Paths in batch
   useEffect(() => {
     let isCancelled = false;
 
@@ -128,7 +126,6 @@ const MainCanvas: React.FC<MainCanvasProps> = ({
       canvas.backgroundColor = '#09090b';
 
       try {
-        // Load background image
         const img = await fabric.FabricImage.fromURL(sourceImage, { crossOrigin: 'anonymous' });
         if (isCancelled) return;
 
@@ -158,19 +155,26 @@ const MainCanvas: React.FC<MainCanvasProps> = ({
         const scaleX = img.scaleX!;
         const scaleY = img.scaleY!;
 
-        // Render each SVG Path onto Fabric
-        for (const pathData of svgPaths) {
-          if (!pathData.d) continue;
+        if (svgPaths.length > 0) {
+          // Combine all paths into a single SVG document for fast 1-pass parsing
+          const pathElements = svgPaths
+            .filter((p) => p.d)
+            .map(
+              (p, i) =>
+                `<path id="${p.id}" data-idx="${i}" d="${p.d}" fill="${p.fill}" stroke="${p.stroke}" stroke-width="${p.strokeWidth || 1}" opacity="${p.opacity}" />`
+            )
+            .join('\n');
 
-          try {
-            const svgString = `<svg xmlns="http://www.w3.org/2000/svg"><path d="${pathData.d}" fill="${pathData.fill}" stroke="${pathData.stroke}" stroke-width="${pathData.strokeWidth || 1}" opacity="${pathData.opacity}" /></svg>`;
-            const parsed = await fabric.loadSVGFromString(svgString);
-            if (isCancelled || !parsed.objects || parsed.objects.length === 0) continue;
+          const combinedSvg = `<svg xmlns="http://www.w3.org/2000/svg">${pathElements}</svg>`;
+          const parsed = await fabric.loadSVGFromString(combinedSvg);
 
-            const obj = parsed.objects[0];
-            if (obj) {
+          if (!isCancelled && parsed.objects) {
+            for (let i = 0; i < parsed.objects.length; i++) {
+              const obj = parsed.objects[i];
+              const pathData = svgPaths[i];
+              if (!obj || !pathData) continue;
+
               (obj as any).customId = pathData.id;
-
               obj.scaleX = (obj.scaleX || 1) * scaleX;
               obj.scaleY = (obj.scaleY || 1) * scaleY;
               obj.left = imgLeft + (obj.left || 0) * scaleX;
@@ -182,8 +186,6 @@ const MainCanvas: React.FC<MainCanvasProps> = ({
 
               canvas.add(obj);
             }
-          } catch (e) {
-            console.warn('Could not parse path with fabric, fallback:', e);
           }
         }
 
@@ -247,7 +249,6 @@ const MainCanvas: React.FC<MainCanvasProps> = ({
         </div>
       )}
 
-      {/* Floating Canvas Controls */}
       <div className="absolute bottom-4 left-4 bg-zinc-900/90 backdrop-blur border border-zinc-800 rounded-lg px-3 py-1.5 text-xs text-zinc-400 flex items-center gap-3 shadow-lg">
         <div className="flex items-center gap-1 border-r border-zinc-800 pr-2">
           <button
